@@ -1,0 +1,90 @@
+#!/bin/bash
+
+LOGFILE="/var/log/user_cli.log"
+touch "$LOGFILE"
+INPUT="$1"
+
+# === Password Validator ===
+validate_password() {
+    if [[ ! "$1" =~ [A-Z] || ! "$1" =~ [0-9] || ${#1} -lt 8 ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# === User Creation Logic ===
+create_user() {
+    local username="$1"
+    local password="$2"
+    local group="$3"
+    local sudo_perm="$4"
+    local expire_date="$5"
+
+    echo "🔧 Creating user '$username'..." | tee -a "$LOGFILE"
+
+    # Password strength check
+    if ! validate_password "$password"; then
+        echo "❌ Weak password for '$username'. Skipping..." | tee -a "$LOGFILE"
+        return
+    fi
+
+    # Create group if missing
+    if ! getent group "$group" > /dev/null; then
+        groupadd "$group"
+        echo "✅ Group '$group' created." | tee -a "$LOGFILE"
+    fi
+
+    # Prevent duplicate users
+    if id "$username" &>/dev/null; then
+        echo "⚠️ User '$username' already exists. Skipping..." | tee -a "$LOGFILE"
+        return
+    fi
+
+    # Create user
+    useradd -m -s /bin/bash -G "$group" -e "$expire_date" "$username"
+    echo "$username:$password" | chpasswd
+    echo "✅ User '$username' created with expiration '$expire_date'." | tee -a "$LOGFILE"
+
+    # Sudo setup
+    if [[ "$sudo_perm" == "y" ]]; then
+        usermod -aG sudo "$username"
+        echo "🛡️ Sudo access granted to '$username'." | tee -a "$LOGFILE"
+    fi
+
+    # Home folder setup
+    chown "$username:$group" "/home/$username"
+    chmod 750 "/home/$username"
+    echo "🏠 Home folder configured for '$username'." | tee -a "$LOGFILE"
+}
+
+# === Batch Mode ===
+process_csv() {
+    echo "🚀 Processing users from '$INPUT'" | tee -a "$LOGFILE"
+    while IFS=',' read -r username password group sudo expire
+    do
+        [[ "$username" == "username" ]] && continue
+        create_user "$username" "$password" "$group" "$sudo" "$expire"
+        echo "--------------------------" | tee -a "$LOGFILE"
+    done < "$INPUT"
+    echo "🎉 Batch process complete." | tee -a "$LOGFILE"
+}
+
+# === Interactive Fallback ===
+interactive_mode() {
+    echo "ℹ️ No CSV provided. Switching to interactive mode."
+
+    read -p "Enter username: " username
+    read -sp "Enter password: " password; echo
+    read -p "Enter group: " group
+    read -p "Grant sudo access? (y/n): " sudo
+    read -p "Enter expiration date (YYYY-MM-DD): " expire
+
+    create_user "$username" "$password" "$group" "$sudo" "$expire"
+}
+
+# === Entry Point ===
+if [[ -n "$INPUT" ]]; then
+    [[ -f "$INPUT" ]] && process_csv || echo "⚠️ CSV file not found: $INPUT"
+else
+    interactive_mode
+fi
